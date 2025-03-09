@@ -269,3 +269,97 @@ class GitRepository:
 		except Exception as e:
 			print(f"暫存所有文件錯誤: {str(e)}")
 			return False
+
+	def fetch_remote(self):
+		"""從遠端倉庫獲取最新變更"""
+		if not self.repo:
+			return {"error": "未打開倉庫"}
+
+		try:
+			# 檢查是否有遠端倉庫
+			if not self.repo.remotes:
+				return {"error": "沒有設置遠端倉庫"}
+
+			# 獲取默認遠端倉庫（通常是 origin）
+			origin = self.repo.remotes.origin
+
+			# 執行獲取操作
+			fetch_info = origin.fetch()
+
+			# 解析獲取結果
+			result = {
+				"success": True,
+				"message": f"成功從 {origin.name} 獲取最新變更",
+				"details": []
+			}
+
+			# 添加詳細信息
+			for info in fetch_info:
+				if info.flags & info.NEW_HEAD:
+					result["details"].append(f"新分支: {info.name}")
+				elif info.flags & info.HEAD_UPTODATE:
+					result["details"].append(f"分支已是最新: {info.name}")
+				elif info.flags & info.FAST_FORWARD:
+					result["details"].append(f"快進更新: {info.name}")
+				elif info.flags & info.FORCED_UPDATE:
+					result["details"].append(f"強制更新: {info.name}")
+				else:
+					result["details"].append(f"更新: {info.name}")
+
+			return result
+		except Exception as e:
+			return {"error": f"獲取遠端變更時出錯: {str(e)}"}
+
+	def push_changes(self, remote_name="origin", branch=None):
+		"""推送變更到遠端倉庫"""
+		if not self.repo:
+			return {"error": "未打開倉庫"}
+		
+		try:
+			# 檢查是否有遠端倉庫
+			if not self.repo.remotes:
+				return {"error": "沒有設置遠端倉庫"}
+			
+			# 獲取遠端倉庫
+			remote = self.repo.remote(remote_name)
+			
+			# 如果沒有指定分支，使用當前分支
+			if not branch:
+				branch = self.repo.active_branch.name
+			
+			# 執行推送操作
+			push_info = remote.push(refspec=f"{branch}:{branch}")
+			
+			# 解析推送結果
+			result = {
+				"success": True,
+				"message": f"成功推送到 {remote_name}/{branch}",
+				"details": []
+			}
+			
+			# 添加詳細信息
+			for info in push_info:
+				if info.flags & info.ERROR:
+					result["success"] = False
+					result["message"] = f"推送到 {remote_name}/{branch} 時出錯"
+					result["details"].append(f"錯誤: {info.summary}")
+				elif info.flags & info.REJECTED:
+					result["success"] = False
+					result["message"] = f"推送到 {remote_name}/{branch} 被拒絕"
+					result["details"].append(f"拒絕: {info.summary}")
+				elif info.flags & info.REMOTE_REJECTED:
+					result["success"] = False
+					result["message"] = f"推送到 {remote_name}/{branch} 被遠端拒絕"
+					result["details"].append(f"遠端拒絕: {info.summary}")
+				elif info.flags & info.UP_TO_DATE:
+					result["details"].append(f"分支已是最新: {info.summary}")
+				elif info.flags & info.FAST_FORWARD:
+					result["details"].append(f"快進更新: {info.summary}")
+				elif info.flags & info.NEW_HEAD:
+					result["details"].append(f"新分支: {info.summary}")
+				else:
+					result["details"].append(f"推送信息: {info.summary}")
+			
+			return result
+		except Exception as e:
+			return {"error": f"推送變更時出錯: {str(e)}"}

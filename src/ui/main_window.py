@@ -627,6 +627,18 @@ class MainWindow(QMainWindow):
 		refresh_action.triggered.connect(self.refresh_files)
 		toolbar.addAction(refresh_action)
 
+		# 添加獲取遠端按鈕
+		fetch_action = QAction("獲取遠端", self)
+		fetch_action.triggered.connect(self.fetch_remote)
+		fetch_action.setToolTip("從遠端倉庫獲取最新變更")
+		toolbar.addAction(fetch_action)
+
+		# 添加推送按鈕
+		push_action = QAction("推送變更", self)
+		push_action.triggered.connect(self.push_changes)
+		push_action.setToolTip("推送本地變更到遠端倉庫")
+		toolbar.addAction(push_action)
+
 		self.addToolBar(toolbar)
 
 	def show_diff(self, item):
@@ -958,20 +970,33 @@ class MainWindow(QMainWindow):
 		commit_scope = self.commit_scope.text()
 		summary = self.commit_summary.text()
 		description = self.commit_description.toPlainText()
-
+		
 		# 檢查摘要是否為空
 		if not summary:
 			QMessageBox.warning(self, "缺少摘要", "請輸入提交摘要")
 			return
-
+		
 		# 格式化提交信息
 		message = self.commit_helper.format_commit_message(
 			commit_type, commit_scope, summary, description
 		)
-
+		
 		# 執行提交
 		if self.repository.commit(message):
 			self.statusBar().showMessage("提交成功")
+			
+			# 詢問是否要推送變更
+			response = QMessageBox.question(
+				self,
+				"推送變更",
+				"提交成功。是否要推送變更到遠端倉庫？",
+				QMessageBox.Yes | QMessageBox.No,
+				QMessageBox.No
+			)
+			
+			if response == QMessageBox.Yes:
+				self.push_changes()
+			
 			# 清空輸入框
 			self.commit_summary.clear()
 			self.commit_description.clear()
@@ -1011,3 +1036,99 @@ class MainWindow(QMainWindow):
 			self.statusBar().showMessage("已暫存所有文件")
 		else:
 			QMessageBox.warning(self, "暫存失敗", "無法暫存所有文件")
+
+	def fetch_remote(self):
+		"""從遠端倉庫獲取最新變更"""
+		if not self.repository.repo:
+			QMessageBox.warning(self, "未打開倉庫", "請先打開一個 Git 倉庫")
+			return
+
+		# 顯示進度對話框
+		progress = QProgressDialog("正在從遠端獲取最新變更...", "取消", 0, 0, self)
+		progress.setWindowModality(Qt.WindowModal)
+		progress.show()
+
+		# 執行獲取操作
+		result = self.repository.fetch_remote()
+
+		progress.close()
+
+		if "error" in result:
+			QMessageBox.warning(self, "獲取失敗", result["error"])
+			return
+
+		# 顯示成功信息
+		details = "\n".join(result.get("details", []))
+		if details:
+			info_dialog = QMessageBox(QMessageBox.Information, "獲取成功",
+									 result["message"],
+									 QMessageBox.Ok, self)
+			info_dialog.setDetailedText(details)
+			info_dialog.exec_()
+		else:
+			QMessageBox.information(self, "獲取成功", result["message"])
+
+		# 刷新分支信息
+		self.refresh_branches()
+
+		# 更新狀態欄
+		self.statusBar().showMessage(result["message"])
+
+	def push_changes(self):
+		"""推送變更到遠端倉庫"""
+		if not self.repository.repo:
+			QMessageBox.warning(self, "未打開倉庫", "請先打開一個 Git 倉庫")
+			return
+		
+		# 獲取當前分支
+		branches = self.repository.get_branches()
+		if isinstance(branches, dict) and "error" in branches:
+			QMessageBox.warning(self, "獲取分支失敗", branches["error"])
+			return
+		
+		current_branch = branches.get("current", "")
+		if not current_branch:
+			QMessageBox.warning(self, "未知分支", "無法確定當前分支")
+			return
+		
+		# 顯示進度對話框
+		progress = QProgressDialog(f"正在推送變更到 origin/{current_branch}...", "取消", 0, 0, self)
+		progress.setWindowModality(Qt.WindowModal)
+		progress.show()
+		
+		# 執行推送操作
+		result = self.repository.push_changes(branch=current_branch)
+		
+		progress.close()
+		
+		if "error" in result:
+			QMessageBox.warning(self, "推送失敗", result["error"])
+			return
+		
+		if not result.get("success", False):
+			# 顯示失敗信息
+			details = "\n".join(result.get("details", []))
+			error_dialog = QMessageBox(QMessageBox.Warning, "推送失敗", 
+									  result["message"], 
+									  QMessageBox.Ok, self)
+			if details:
+				error_dialog.setDetailedText(details)
+			error_dialog.exec_()
+			return
+		
+		# 顯示成功信息
+		details = "\n".join(result.get("details", []))
+		if details:
+			info_dialog = QMessageBox(QMessageBox.Information, "推送成功", 
+									  result["message"], 
+									  QMessageBox.Ok, self)
+			info_dialog.setDetailedText(details)
+			info_dialog.exec_()
+		else:
+			QMessageBox.information(self, "推送成功", result["message"])
+		
+		# 刷新分支信息
+		self.refresh_branches()
+		
+		# 更新狀態欄
+		self.statusBar().showMessage(result["message"])
