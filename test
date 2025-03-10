@@ -1,0 +1,27 @@
++---------------------------------------------------------------------------------+
+| [ICON]    Settings | File | Help                                                |
++---------------------------------------------------------------------------------+
+| Current repository: | Current branch: | Fetch origin                            |
+| - AICommit          | - main          | Last fetched 19 minutes ago             |
++---------------------------------------------------------------------------------+
+| [v] Changes (13)| History           | src/ai_pycache/ai_service.cpython-313.pyc |
++-------------------------------------+-------------------------------------------+
+| [v] src/ai_pyc...ython-313.pyc  | * | This is a binary file.                    |
+| [v] src/ai/ai_service.py        | * |                                           |
+| [v] src/git_py...ython-313.pyc  | - |                                           |
+| [v] src/git/repository.py       | + |                                           |
+| [v] src/ui_pyc...ython-313.pyc  | * |                                           |
+| [v] src/ui_pyc...ython-313.pyc  | * |                                           |
+| [v] src/ui_pyc...ython-313.pyc  | - |                                           |
+| [v] src/ui/accou...ngs_dialog.py| + |                                           |
+| [v] src/ui/main_window.py       | - |                                           |
+| [ ] model_settings_dialog.py    | * |                                           |
+| [v] src/ui/settings_dialog.py   | + |                                           |
++-------------------------------------+                                           |
+| Summary: [                        ] |                                           |
+| Description:                        |                                           |
+| [                                 ] |                                           |
+| [                                 ] |                                           |
+| [                                 ] |                                           |
+| [                                 ] |                                           |
++-------------------------------------+-------------------------------------------+
