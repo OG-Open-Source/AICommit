@@ -24,28 +24,46 @@ class GitRepository:
 		self.path = path
 
 	def _run_git_command(self, command, cwd=None):
-		"""运行 Git 命令"""
+		"""执行 Git 命令并返回输出"""
 		if cwd is None:
 			cwd = self.path
-
-		full_command = f"git {command}"
-		logger.debug(f"执行命令: {full_command} (在 {cwd})")
-
-		process = subprocess.Popen(
-			full_command,
-			stdout=subprocess.PIPE,
-			stderr=subprocess.PIPE,
-			shell=True,
-			cwd=cwd
-		)
-		stdout, stderr = process.communicate()
-
-		if process.returncode != 0:
-			error_msg = stderr.decode('utf-8')
-			logger.error(f"Git 命令失败: {error_msg}")
-			raise Exception(f"Git 命令失败: {error_msg}")
-
-		return stdout.decode('utf-8')
+		
+		logger.debug(f"执行命令: git {command} (在 {cwd})")
+		
+		try:
+			# 处理命令参数，支持字符串和列表两种形式
+			if isinstance(command, list):
+				cmd = ["git"] + command
+				cmd_str = f"git {' '.join(command)}"
+			else:
+				cmd = f"git {command}"
+				cmd_str = cmd
+			
+			# 执行命令
+			process = subprocess.Popen(
+				cmd,
+				stdout=subprocess.PIPE,
+				stderr=subprocess.PIPE,
+				cwd=cwd,
+				universal_newlines=True,
+				shell=isinstance(command, str)  # 字符串使用 shell，列表不使用
+			)
+			
+			# 获取输出
+			output, error = process.communicate()
+			
+			# 检查是否有错误
+			if process.returncode != 0:
+				error_msg = error.strip()
+				logger.error(f"Git 命令失败: {error_msg}")
+				raise Exception(f"Git 命令失败: {error_msg}")
+			
+			return output.strip()
+		except Exception as e:
+			if not str(e).startswith("Git 命令失败"):
+				logger.error(f"执行 Git 命令失败: {str(e)}")
+				raise Exception(f"执行 Git 命令失败: {str(e)}")
+			raise
 
 	def get_status(self):
 		"""获取仓库状态"""
@@ -196,3 +214,105 @@ class GitRepository:
 		"""创建新分支"""
 		logger.info(f"创建分支: {branch_name}")
 		self._run_git_command(f"branch {branch_name}")
+
+	def get_file_diff(self, file_path):
+		"""获取文件差异，不触发状态刷新"""
+		logger.debug(f"获取文件差异: {file_path}")
+		
+		# 检查文件是否存在
+		full_path = os.path.join(self.path, file_path)
+		
+		# 对于未跟踪的文件，显示文件内容
+		if not os.path.exists(full_path):
+			return f"文件不存在: {file_path}"
+		
+		# 获取文件状态
+		try:
+			# 检查文件是否已暂存
+			staged_output = self._run_git_command(f"diff --cached {file_path}")
+			if staged_output:
+				return f"已暂存的更改:\n{staged_output}"
+			
+			# 检查文件是否已修改
+			modified_output = self._run_git_command(f"diff {file_path}")
+			if modified_output:
+				return modified_output
+			
+			# 检查文件是否未跟踪
+			untracked_files = self._run_git_command("ls-files --others --exclude-standard").splitlines()
+			if file_path in untracked_files:
+				logger.debug(f"显示未跟踪文件内容: {file_path}")
+				
+				# 直接检查文件是否为二进制文件
+				is_binary = False
+				try:
+					with open(full_path, 'rb') as f:
+						chunk = f.read(1024)
+						is_binary = b'\0' in chunk  # 包含空字节的通常是二进制文件
+				except:
+					pass
+				
+				# 检查文件扩展名
+				file_ext = os.path.splitext(file_path)[1].lower()
+				binary_extensions = ['.pyc', '.pyd', '.dll', '.so', '.exe', '.bin', '.dat', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico', '.pdf']
+				if file_ext in binary_extensions:
+					is_binary = True
+				
+				if is_binary:
+					# 对于二进制文件，使用 Git 原生格式
+					return f"[Binary file {file_path} not shown]"
+				else:
+					# 对于文本文件，显示内容
+					try:
+						with open(full_path, 'r', encoding='utf-8') as f:
+							content = f.read()
+						return f"新文件: {file_path}\n\n{content}"
+					except UnicodeDecodeError:
+						# 如果 UTF-8 解码失败，尝试其他编码
+						try:
+							with open(full_path, 'r', encoding='latin-1') as f:
+								content = f.read()
+							return f"新文件 (非UTF-8编码): {file_path}\n\n{content}"
+						except Exception as e:
+							return f"无法读取未跟踪文件: {file_path}\n{str(e)}"
+					except Exception as e:
+						return f"无法读取未跟踪文件: {file_path}\n{str(e)}"
+			
+			# 如果文件没有变化，显示文件内容
+			# 直接检查文件是否为二进制文件
+			is_binary = False
+			try:
+				with open(full_path, 'rb') as f:
+					chunk = f.read(1024)
+					is_binary = b'\0' in chunk  # 包含空字节的通常是二进制文件
+			except:
+				pass
+			
+			# 检查文件扩展名
+			file_ext = os.path.splitext(file_path)[1].lower()
+			binary_extensions = ['.pyc', '.pyd', '.dll', '.so', '.exe', '.bin', '.dat', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico', '.pdf']
+			if file_ext in binary_extensions:
+				is_binary = True
+			
+			if is_binary:
+				# 对于二进制文件，使用 Git 原生格式
+				return f"[Binary file {file_path} not shown]"
+			else:
+				# 对于文本文件，显示内容
+				try:
+					with open(full_path, 'r', encoding='utf-8') as f:
+						content = f.read()
+					return f"文件内容: {file_path}\n\n{content}"
+				except UnicodeDecodeError:
+					# 如果 UTF-8 解码失败，尝试其他编码
+					try:
+						with open(full_path, 'r', encoding='latin-1') as f:
+							content = f.read()
+						return f"文件内容 (非UTF-8编码): {file_path}\n\n{content}"
+					except Exception as e:
+						return f"无法读取文件: {file_path}\n{str(e)}"
+				except Exception as e:
+					return f"无法读取文件: {file_path}\n{str(e)}"
+		except Exception as e:
+			logger.error(f"获取文件差异失败: {str(e)}", exc_info=True)
+			return f"获取差异失败: {str(e)}"

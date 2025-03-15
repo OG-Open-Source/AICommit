@@ -3,18 +3,636 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 							QToolBar, QAction, QStatusBar, QFileDialog, QMessageBox,
 							QListWidgetItem, QFileSystemModel, QLabel, QLineEdit,
 							QPushButton, QGroupBox, QFormLayout, QTabWidget, QDialog,
-							QComboBox, QCheckBox, QMenu, QMenuBar)
-from PyQt5.QtCore import Qt, QSize, QDir
-from PyQt5.QtGui import QIcon, QColor, QTextCharFormat, QBrush, QFont
+							QComboBox, QCheckBox, QMenu, QMenuBar, QApplication)
+from PyQt5.QtCore import Qt, QSize, QDir, QTimer, QPropertyAnimation, QEasingCurve, QRect, QThread, pyqtSignal, QEvent
+from PyQt5.QtGui import QIcon, QColor, QTextCharFormat, QBrush, QFont, QPainter, QPen
 
 import os
 import logging
+import time
+import sys
+import threading
+import tempfile
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from git.repository import GitRepository
 from ui.commit_dialog import CommitDialog
 from utils.config import Config
 
 # 配置日志记录器
 logger = logging.getLogger("ui.main_window")
+
+class LoadingOverlay(QWidget):
+	"""加载遮罩，显示加载状态"""
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		# 首先设置所有可能使用的属性，确保它们存在
+		self.parent = parent
+		self.angle = 0
+		self.timer = None
+		self.message = "加载中..."
+		self.opacity = 0.0
+		self.fade_animation = None
+		
+		# 然后进行其他初始化
+		self.setAttribute(Qt.WA_TranslucentBackground)
+		
+		# 增加动画流畅度，更新频率提高到每30毫秒
+		try:
+			self.timer = QTimer(self)
+			self.timer.timeout.connect(self.rotate)
+			self.timer.start(30)  # 每30毫秒更新一次
+			logger.debug("成功初始化旋转计时器")
+		except Exception as e:
+			logger.error(f"初始化旋转计时器失败: {str(e)}", exc_info=True)
+		
+		self.hide()
+		
+		# 设置鼠标追踪，以便捕获所有鼠标事件
+		self.setMouseTracking(True)
+		
+		# 添加淡入淡出效果
+		try:
+			self.fade_animation = QPropertyAnimation(self, b"windowOpacity")
+			self.fade_animation.setDuration(200)  # 200毫秒的动画时间
+			logger.debug("成功初始化淡入淡出动画")
+		except Exception as e:
+			logger.error(f"初始化淡入淡出动画失败: {str(e)}", exc_info=True)
+	
+	def paintEvent(self, event):
+		try:
+			painter = QPainter(self)
+			painter.setRenderHint(QPainter.Antialiasing)
+			
+			# 使用更轻量级的绘制方式
+			painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+			
+			# 绘制半透明背景
+			painter.fillRect(self.rect(), QColor(0, 0, 0, 80))  # 降低背景不透明度
+			
+			# 绘制加载文本
+			painter.setPen(QColor(255, 255, 255))
+			font = QFont()
+			font.setPointSize(12)
+			painter.setFont(font)
+			
+			# 计算文本位置，放在中心偏下的位置
+			text_rect = self.rect()
+			text_rect.setTop(text_rect.top() + self.height() // 2 - 30)
+			painter.drawText(text_rect, Qt.AlignHCenter, self.message)
+			
+			# 绘制旋转的加载图标，放在文本下方
+			icon_x = self.width() // 2
+			icon_y = self.height() // 2 + 30
+			painter.translate(icon_x, icon_y)
+			painter.rotate(self.angle)
+			
+			pen = QPen(QColor(255, 255, 255))
+			pen.setWidth(3)
+			painter.setPen(pen)
+			
+			# 绘制一个不完整的圆
+			rect = QRect(-15, -15, 30, 30)
+			painter.drawArc(rect, 0, 270 * 16)  # 角度以1/16度为单位
+		except Exception as e:
+			logger.error(f"绘制加载遮罩失败: {str(e)}", exc_info=True)
+	
+	def rotate(self):
+		try:
+			# 更平滑的旋转
+			self.angle = (self.angle + 6) % 360
+			self.update()
+		except Exception as e:
+			logger.error(f"旋转加载图标失败: {str(e)}", exc_info=True)
+	
+	def showEvent(self, event):
+		"""显示事件处理"""
+		try:
+			# 调整大小并确保在最上层
+			self.resize(self.parent.size())
+			self.raise_()
+			
+			# 淡入效果
+			if hasattr(self, 'fade_animation') and self.fade_animation is not None:
+				try:
+					self.fade_animation.setStartValue(0.0)
+					self.fade_animation.setEndValue(1.0)
+					self.fade_animation.start()
+					logger.debug("开始淡入动画")
+				except Exception as e:
+					logger.error(f"启动淡入动画失败: {str(e)}", exc_info=True)
+		except Exception as e:
+			logger.error(f"显示加载遮罩失败: {str(e)}", exc_info=True)
+	
+	def show_with_message(self, message="加载中..."):
+		try:
+			self.message = message
+			logger.debug(f"显示加载遮罩，消息: {message}")
+			self.show()
+		except Exception as e:
+			logger.error(f"显示加载遮罩消息失败: {str(e)}", exc_info=True)
+	
+	def hideEvent(self, event):
+		try:
+			# 停止旋转计时器，减少资源占用
+			self.timer.stop()
+			logger.debug("停止加载遮罩计时器")
+		except Exception as e:
+			logger.error(f"隐藏加载遮罩事件处理失败: {str(e)}", exc_info=True)
+	
+	def hide(self):
+		"""隐藏加载遮罩"""
+		try:
+			logger.debug("尝试隐藏加载遮罩")
+			
+			# 检查 fade_animation 是否存在且有效
+			has_animation = hasattr(self, 'fade_animation') and self.fade_animation is not None
+			
+			# 淡出效果
+			if has_animation:
+				try:
+					# 断开之前的连接，避免多次连接
+					try:
+						self.fade_animation.finished.disconnect()
+					except (TypeError, AttributeError):
+						# 如果没有连接或者方法不存在，会抛出异常
+						pass
+					
+					self.fade_animation.setStartValue(1.0)
+					self.fade_animation.setEndValue(0.0)
+					self.fade_animation.finished.connect(self._hide_finished)
+					self.fade_animation.start()
+					logger.debug("开始淡出动画")
+				except Exception as e:
+					logger.error(f"启动淡出动画失败: {str(e)}", exc_info=True)
+					# 如果动画失败，直接隐藏
+					super().hide()
+					# 尝试重新启动计时器
+					if hasattr(self, 'timer') and self.timer is not None:
+						try:
+							self.timer.start()
+						except:
+							pass
+			else:
+				# 如果没有动画，直接隐藏
+				logger.debug("无动画，直接隐藏")
+				super().hide()
+				# 尝试重新启动计时器
+				if hasattr(self, 'timer') and self.timer is not None:
+					try:
+						self.timer.start()
+					except:
+						pass
+		except Exception as e:
+			logger.error(f"隐藏加载遮罩失败: {str(e)}", exc_info=True)
+			# 确保在出错时也能隐藏
+			try:
+				super().hide()
+			except:
+				pass
+	
+	def _hide_finished(self):
+		"""淡出动画完成后的回调"""
+		try:
+			logger.debug("淡出动画完成，隐藏加载遮罩")
+			# 断开信号连接，避免多次调用
+			if hasattr(self, 'fade_animation') and self.fade_animation is not None:
+				try:
+					self.fade_animation.finished.disconnect(self._hide_finished)
+				except (TypeError, AttributeError):
+					# 如果已经断开或方法不存在，会抛出异常
+					pass
+			
+			# 调用真正的隐藏方法
+			super().hide()
+			
+			# 重新启动计时器，为下次显示做准备
+			if hasattr(self, 'timer') and self.timer is not None:
+				try:
+					self.timer.start()
+				except:
+					pass
+		except Exception as e:
+			logger.error(f"淡出动画完成后隐藏加载遮罩失败: {str(e)}", exc_info=True)
+			# 确保在出错时也能隐藏
+			try:
+				super().hide()
+			except:
+				pass
+	
+	# 捕获所有鼠标事件，防止点击穿透
+	def mousePressEvent(self, event):
+		event.accept()
+	
+	def mouseReleaseEvent(self, event):
+		event.accept()
+	
+	def mouseMoveEvent(self, event):
+		event.accept()
+	
+	def mouseDoubleClickEvent(self, event):
+		event.accept()
+
+class ApiWorker(QThread):
+	"""处理 API 请求的工作线程"""
+	finished = pyqtSignal(object)  # 成功完成信号，传递结果
+	error = pyqtSignal(str)  # 错误信号，传递错误信息
+	
+	def __init__(self, task_type, provider=None, api_params=None):
+		super().__init__()
+		self.task_type = task_type  # 'test_connection' 或 'generate_commit'
+		self.provider = provider
+		self.api_params = api_params or {}
+		
+	def run(self):
+		try:
+			if self.task_type == 'test_connection':
+				result = self._test_connection()
+				self.finished.emit(result)
+			elif self.task_type == 'generate_commit':
+				result = self._generate_commit()
+				self.finished.emit(result)
+		except Exception as e:
+			self.error.emit(str(e))
+	
+	def _test_connection(self):
+		"""测试与 AI 提供商的连接"""
+		import time
+		import requests
+		import json
+		
+		provider = self.provider
+		api_params = self.api_params
+		test_message = "Hello, this is a test message. Please respond with a simple greeting."
+		
+		if provider == "OpenAI":
+			import openai
+			api_key = api_params.get('api_key', '')
+			model = api_params.get('model', 'gpt-3.5-turbo')
+			
+			if not api_key:
+				raise ValueError("API 密钥不能为空")
+			
+			# 设置 API 密钥
+			client = openai.OpenAI(api_key=api_key)
+			
+			# 调用 API
+			start_time = time.time()
+			response = client.chat.completions.create(
+				model=model,
+				messages=[{"role": "user", "content": test_message}],
+				max_tokens=50
+			)
+			end_time = time.time()
+			
+			# 获取响应文本
+			result = response.choices[0].message.content.strip()
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'model': model,
+				'response_time': end_time - start_time,
+				'result': result
+			}
+			
+		elif provider == "Anthropic":
+			import anthropic
+			api_key = api_params.get('api_key', '')
+			model = api_params.get('model', 'claude-3-haiku')
+			
+			if not api_key:
+				raise ValueError("API 密钥不能为空")
+			
+			# 设置 API 密钥
+			client = anthropic.Anthropic(api_key=api_key)
+			
+			# 调用 API
+			start_time = time.time()
+			response = client.messages.create(
+				model=model,
+				messages=[{"role": "user", "content": test_message}],
+				max_tokens=50
+			)
+			end_time = time.time()
+			
+			# 获取响应文本
+			result = response.content[0].text
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'model': model,
+				'response_time': end_time - start_time,
+				'result': result
+			}
+			
+		elif provider == "Google":
+			import google.generativeai as genai
+			api_key = api_params.get('api_key', '')
+			model_name = api_params.get('model', 'gemini-pro')
+			
+			if not api_key:
+				raise ValueError("API 密钥不能为空")
+			
+			# 设置 API 密钥
+			genai.configure(api_key=api_key)
+			
+			# 获取模型
+			model = genai.GenerativeModel(model_name)
+			
+			# 调用 API
+			start_time = time.time()
+			response = model.generate_content(test_message)
+			end_time = time.time()
+			
+			# 获取响应文本
+			result = response.text
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'model': model_name,
+				'response_time': end_time - start_time,
+				'result': result
+			}
+			
+		elif provider == "自定义 Web API":
+			api_url = api_params.get('api_url', '')
+			api_key = api_params.get('api_key', '')
+			model = api_params.get('model', '')
+			
+			if not api_url:
+				raise ValueError("API URL 不能为空")
+			
+			# 准备请求头
+			headers = {
+				"Content-Type": "application/json"
+			}
+			
+			if api_key:
+				headers["Authorization"] = f"Bearer {api_key}"
+			
+			# 准备请求体
+			payload = {
+				"model": model,
+				"messages": [
+					{"role": "user", "content": test_message}
+				]
+			}
+			
+			# 调用 API
+			start_time = time.time()
+			response = requests.post(api_url, headers=headers, json=payload)
+			end_time = time.time()
+			
+			# 检查响应状态
+			response.raise_for_status()
+			
+			# 显示原始响应
+			raw_response = response.text
+			
+			# 尝试解析 JSON
+			try:
+				response_data = response.json()
+				formatted_json = json.dumps(response_data, indent=2)
+				
+				# 尝试提取响应文本
+				result = "无法从响应中提取文本内容"
+				
+				if "choices" in response_data and len(response_data["choices"]) > 0:
+					if "message" in response_data["choices"][0]:
+						result = response_data["choices"][0]["message"]["content"]
+					elif "text" in response_data["choices"][0]:
+						result = response_data["choices"][0]["text"]
+				elif "content" in response_data:
+					result = response_data["content"]
+				
+				return {
+					'success': True,
+					'provider': provider,
+					'url': api_url,
+					'response_time': end_time - start_time,
+					'result': result,
+					'raw_json': formatted_json
+				}
+			except json.JSONDecodeError:
+				# 如果不是 JSON，返回错误
+				raise ValueError(f"API 返回了非 JSON 格式的响应。这可能是因为 API 端点不正确或者服务器返回了 HTML 错误页面。\n\n原始响应:\n{raw_response[:500]}...")
+	
+	def _generate_commit(self):
+		"""生成提交信息"""
+		import time
+		import requests
+		import json
+		
+		provider = self.api_params.get('provider', 'OpenAI')
+		system_prompt = self.api_params.get('system_prompt', '')
+		all_diffs = self.api_params.get('diffs', '')
+		
+		if provider == "OpenAI":
+			import openai
+			api_key = self.api_params.get('api_key', '')
+			model = self.api_params.get('model', 'gpt-3.5-turbo')
+			
+			if not api_key:
+				raise ValueError("OpenAI API 密钥未设置")
+			
+			# 设置 API 密钥
+			client = openai.OpenAI(api_key=api_key)
+			
+			# 准备消息
+			messages = []
+			
+			# 添加系统提示
+			if system_prompt:
+				if "{diff_content}" in system_prompt:
+					system_prompt = system_prompt.replace("{diff_content}", all_diffs)
+				messages.append({"role": "system", "content": system_prompt})
+			
+			# 如果系统提示中没有包含差异内容，则添加为用户消息
+			if "{diff_content}" not in self.api_params.get('original_system_prompt', ''):
+				messages.append({"role": "user", "content": all_diffs})
+			
+			# 调用 API
+			start_time = time.time()
+			response = client.chat.completions.create(
+				model=model,
+				messages=messages,
+				temperature=0.3
+			)
+			end_time = time.time()
+			
+			# 获取响应文本
+			commit_message = response.choices[0].message.content.strip()
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'response_time': end_time - start_time,
+				'commit_message': commit_message
+			}
+			
+		elif provider == "Anthropic":
+			import anthropic
+			api_key = self.api_params.get('api_key', '')
+			model = self.api_params.get('model', 'claude-3-haiku')
+			
+			if not api_key:
+				raise ValueError("Anthropic API 密钥未设置")
+			
+			# 设置 API 密钥
+			client = anthropic.Anthropic(api_key=api_key)
+			
+			# 准备消息
+			messages = []
+			
+			# 添加系统提示
+			system = None
+			if system_prompt:
+				if "{diff_content}" in system_prompt:
+					system_prompt = system_prompt.replace("{diff_content}", all_diffs)
+				system = system_prompt
+			
+			# 如果系统提示中没有包含差异内容，则添加为用户消息
+			if "{diff_content}" not in self.api_params.get('original_system_prompt', ''):
+				messages.append({"role": "user", "content": all_diffs})
+			else:
+				messages.append({"role": "user", "content": "请根据上述代码差异生成提交信息"})
+			
+			# 调用 API
+			start_time = time.time()
+			response = client.messages.create(
+				model=model,
+				messages=messages,
+				system=system,
+				temperature=0.3
+			)
+			end_time = time.time()
+			
+			# 获取响应文本
+			commit_message = response.content[0].text
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'response_time': end_time - start_time,
+				'commit_message': commit_message
+			}
+			
+		elif provider == "Google":
+			import google.generativeai as genai
+			api_key = self.api_params.get('api_key', '')
+			model_name = self.api_params.get('model', 'gemini-pro')
+			
+			if not api_key:
+				raise ValueError("Google API 密钥未设置")
+			
+			# 设置 API 密钥
+			genai.configure(api_key=api_key)
+			
+			# 获取模型
+			model = genai.GenerativeModel(model_name)
+			
+			# 准备提示
+			prompt = system_prompt if "{diff_content}" in self.api_params.get('original_system_prompt', '') else all_diffs
+			
+			# 调用 API
+			start_time = time.time()
+			response = model.generate_content(prompt)
+			end_time = time.time()
+			
+			# 获取响应文本
+			commit_message = response.text
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'response_time': end_time - start_time,
+				'commit_message': commit_message
+			}
+			
+		elif provider == "自定义 Web API":
+			api_url = self.api_params.get('api_url', '')
+			api_key = self.api_params.get('api_key', '')
+			model = self.api_params.get('model', '')
+			
+			if not api_url:
+				raise ValueError("Web API URL 未设置")
+			
+			# 准备请求头
+			headers = {
+				"Content-Type": "application/json"
+			}
+			
+			if api_key:
+				headers["Authorization"] = f"Bearer {api_key}"
+			
+			# 准备请求体
+			payload = {
+				"model": model,
+				"messages": [
+					{"role": "system", "content": system_prompt}
+				]
+			}
+			
+			# 如果系统提示词中没有包含差异内容，则添加为用户消息
+			if "{diff_content}" not in self.api_params.get('original_system_prompt', ''):
+				payload["messages"].append({"role": "user", "content": all_diffs})
+			
+			# 调用 API
+			start_time = time.time()
+			response = requests.post(api_url, headers=headers, json=payload)
+			end_time = time.time()
+			
+			# 检查响应状态
+			response.raise_for_status()
+			
+			# 检查响应内容是否为空
+			if not response.text.strip():
+				raise ValueError("API 返回了空响应")
+			
+			# 尝试解析 JSON 响应
+			try:
+				response_data = response.json()
+			except json.JSONDecodeError as e:
+				# 如果不是 JSON 格式，抛出异常
+				raise ValueError(f"API 返回了非 JSON 格式的响应。这可能是因为 API 端点不正确或者服务器返回了错误页面。\n\n原始响应:\n{response.text[:200]}...")
+			
+			# 尝试从不同的响应格式中提取文本
+			if "choices" in response_data and len(response_data["choices"]) > 0:
+				# OpenAI 格式
+				if "message" in response_data["choices"][0]:
+					commit_message = response_data["choices"][0]["message"]["content"]
+				else:
+					commit_message = response_data["choices"][0]["text"]
+			elif "content" in response_data:
+				# 简单格式
+				commit_message = response_data["content"]
+			elif isinstance(response_data, list) and len(response_data) > 0:
+				# 数组格式
+				if isinstance(response_data[0], dict) and "content" in response_data[0]:
+					commit_message = response_data[0]["content"]
+				else:
+					commit_message = str(response_data[0])
+			elif isinstance(response_data, dict) and "text" in response_data:
+				# 另一种常见格式
+				commit_message = response_data["text"]
+			elif isinstance(response_data, str):
+				# 直接是字符串
+				commit_message = response_data
+			else:
+				# 未知格式，返回整个响应
+				commit_message = json.dumps(response_data, indent=2)
+			
+			return {
+				'success': True,
+				'provider': provider,
+				'response_time': end_time - start_time,
+				'commit_message': commit_message
+			}
 
 class SettingsDialog(QDialog):
 	def __init__(self, parent=None, current_provider="OpenAI"):
@@ -79,6 +697,11 @@ class SettingsDialog(QDialog):
 		self.openai_model.addItems(["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"])
 		openai_layout.addRow("模型:", self.openai_model)
 
+		# 添加测试按钮
+		test_openai_button = QPushButton("测试连接")
+		test_openai_button.clicked.connect(lambda: self.test_connection("OpenAI"))
+		openai_layout.addRow("", test_openai_button)
+
 		self.provider_groups["OpenAI"] = openai_group
 		provider_layout.addWidget(openai_group)
 		openai_group.setVisible(self.current_provider == "OpenAI")
@@ -95,6 +718,11 @@ class SettingsDialog(QDialog):
 		self.anthropic_model.addItems(["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"])
 		anthropic_layout.addRow("模型:", self.anthropic_model)
 
+		# 添加测试按钮
+		test_anthropic_button = QPushButton("测试连接")
+		test_anthropic_button.clicked.connect(lambda: self.test_connection("Anthropic"))
+		anthropic_layout.addRow("", test_anthropic_button)
+
 		self.provider_groups["Anthropic"] = anthropic_group
 		provider_layout.addWidget(anthropic_group)
 		anthropic_group.setVisible(self.current_provider == "Anthropic")
@@ -110,6 +738,11 @@ class SettingsDialog(QDialog):
 		self.google_model = QComboBox()
 		self.google_model.addItems(["gemini-pro", "gemini-ultra"])
 		google_layout.addRow("模型:", self.google_model)
+
+		# 添加测试按钮
+		test_google_button = QPushButton("测试连接")
+		test_google_button.clicked.connect(lambda: self.test_connection("Google"))
+		google_layout.addRow("", test_google_button)
 
 		self.provider_groups["Google"] = google_group
 		provider_layout.addWidget(google_group)
@@ -130,6 +763,11 @@ class SettingsDialog(QDialog):
 		self.web_api_model = QLineEdit()
 		self.web_api_model.setPlaceholderText("模型名称")
 		web_layout.addRow("模型:", self.web_api_model)
+
+		# 添加测试按钮
+		test_web_button = QPushButton("测试连接")
+		test_web_button.clicked.connect(lambda: self.test_connection("自定义 Web API"))
+		web_layout.addRow("", test_web_button)
 
 		self.provider_groups["自定义 Web API"] = web_group
 		provider_layout.addWidget(web_group)
@@ -176,33 +814,196 @@ class SettingsDialog(QDialog):
 
 		self.current_provider = provider
 
+	def test_connection(self, provider):
+		"""测试与 AI 提供商的连接"""
+		try:
+			# 检查是否安装了所需的库
+			if provider == "OpenAI":
+				try:
+					import openai
+				except ImportError:
+					QMessageBox.critical(self, "错误", "未安装 OpenAI 库。请运行: pip install openai>=1.0.0")
+					return
+			elif provider == "Anthropic":
+				try:
+					import anthropic
+				except ImportError:
+					QMessageBox.critical(self, "错误", "未安装 Anthropic 库。请运行: pip install anthropic>=0.5.0")
+					return
+			elif provider == "Google":
+				try:
+					import google.generativeai as genai
+				except ImportError:
+					QMessageBox.critical(self, "错误", "未安装 Google Generative AI 库。请运行: pip install google-generativeai>=0.1.0")
+					return
+			
+			# 立即创建并显示加载遮罩
+			self.overlay = LoadingOverlay(self)
+			self.overlay.show_with_message(f"正在测试与 {provider} 的连接...")
+			
+			# 立即处理所有待处理的事件，确保遮罩显示
+			QApplication.processEvents()
+			
+			# 使用 QTimer 延迟执行后续操作，让 UI 有时间更新
+			QTimer.singleShot(50, lambda: self._prepare_test_connection(provider))
+			
+		except Exception as e:
+			logger.error(f"测试连接失败: {str(e)}", exc_info=True)
+			if hasattr(self, 'overlay'):
+				try:
+					self._safe_hide_overlay('overlay')
+				except Exception as hide_error:
+					logger.error(f"隐藏加载遮罩失败: {str(hide_error)}", exc_info=True)
+			QMessageBox.critical(self, "错误", f"测试连接失败: {str(e)}")
+
+	def _prepare_test_connection(self, provider):
+		"""准备测试连接的参数并启动工作线程"""
+		try:
+			# 再次处理事件，确保UI响应
+			QApplication.processEvents()
+			
+			# 准备 API 参数
+			api_params = {}
+			if provider == "OpenAI":
+				api_params = {
+					'api_key': self.openai_api_key.text(),
+					'model': self.openai_model.currentText()
+				}
+			elif provider == "Anthropic":
+				api_params = {
+					'api_key': self.anthropic_api_key.text(),
+					'model': self.anthropic_model.currentText()
+				}
+			elif provider == "Google":
+				api_params = {
+					'api_key': self.google_api_key.text(),
+					'model': self.google_model.currentText()
+				}
+			elif provider == "自定义 Web API":
+				api_params = {
+					'api_url': self.web_api_url.text(),
+					'api_key': self.web_api_key.text(),
+					'model': self.web_api_model.text()
+				}
+			
+			# 再次处理事件，确保UI响应
+			QApplication.processEvents()
+			
+			# 创建工作线程
+			self.worker = ApiWorker('test_connection', provider, api_params)
+			self.worker.finished.connect(self.on_test_connection_finished)
+			self.worker.error.connect(self.on_test_connection_error)
+			
+			# 启动工作线程前再次处理事件
+			QApplication.processEvents()
+			
+			# 启动工作线程
+			self.worker.start()
+			
+			# 启动后立即处理事件
+			QApplication.processEvents()
+			
+		except Exception as e:
+			logger.error(f"准备测试连接失败: {str(e)}", exc_info=True)
+			if hasattr(self, 'overlay'):
+				try:
+					self._safe_hide_overlay('overlay')
+				except Exception as hide_error:
+					logger.error(f"隐藏加载遮罩失败: {str(hide_error)}", exc_info=True)
+			QMessageBox.critical(self, "错误", f"测试连接失败: {str(e)}")
+
+	def on_test_connection_finished(self, result):
+		"""测试连接完成的回调"""
+		logger.debug("测试连接完成，准备隐藏加载遮罩")
+		try:
+			if hasattr(self, 'overlay') and self.overlay:
+				QTimer.singleShot(100, lambda: self._safe_hide_overlay('overlay'))
+			else:
+				logger.warning("找不到加载遮罩对象")
+		except Exception as e:
+			logger.error(f"隐藏加载遮罩失败: {str(e)}", exc_info=True)
+		
+		provider = result.get('provider')
+		
+		if provider == "自定义 Web API":
+			QMessageBox.information(
+				self, 
+				"测试成功", 
+				f"成功连接到 Web API!\n\n"
+				f"URL: {result.get('url')}\n"
+				f"响应时间: {result.get('response_time'):.2f} 秒\n\n"
+				f"提取的响应内容: {result.get('result')}\n\n"
+				f"原始 JSON 响应:\n{result.get('raw_json', '')[:500]}..."  # 只显示前500个字符
+			)
+		else:
+			QMessageBox.information(
+				self, 
+				"测试成功", 
+				f"成功连接到 {provider}!\n\n"
+				f"模型: {result.get('model')}\n"
+				f"响应时间: {result.get('response_time'):.2f} 秒\n\n"
+				f"响应内容: {result.get('result')}"
+			)
+
+	def on_test_connection_error(self, error_message):
+		"""测试连接错误的回调"""
+		logger.error(f"测试连接失败: {error_message}")
+		try:
+			if hasattr(self, 'overlay') and self.overlay:
+				QTimer.singleShot(100, lambda: self._safe_hide_overlay('overlay'))
+			else:
+				logger.warning("找不到加载遮罩对象")
+		except Exception as e:
+			logger.error(f"隐藏加载遮罩失败: {str(e)}", exc_info=True)
+		QMessageBox.critical(self, "连接失败", error_message)
+
 # 创建自定义的文件项组件
 class FileItemWidget(QWidget):
-	def __init__(self, file_path, file_status, parent=None, on_checkbox_changed=None):
-		super().__init__(parent)
+	"""文件项组件，显示文件名和复选框"""
+	def __init__(self, file_path, status="modified", on_checkbox_changed=None):
+		super().__init__()
 		self.file_path = file_path
-		self.file_status = file_status
+		self.status = status
 		self.on_checkbox_changed = on_checkbox_changed
-
+		self._is_updating = False  # 添加标志，防止重复触发
+		
 		layout = QHBoxLayout(self)
-		layout.setContentsMargins(2, 2, 2, 2)
-
-		# 复选框 - 默认选中
+		layout.setContentsMargins(5, 0, 5, 0)
+		
 		self.checkbox = QCheckBox()
-		self.checkbox.setChecked(True)  # 默认选中所有文件
-		if self.on_checkbox_changed:
-			self.checkbox.stateChanged.connect(self.checkbox_state_changed)
+		self.checkbox.setChecked(True)  # 默认选中
+		self.checkbox.stateChanged.connect(self._on_state_changed)
+		
+		status_label = QLabel()
+		if status == "staged":
+			status_label.setText("已暂存")
+			status_label.setStyleSheet("color: green;")
+		elif status == "modified":
+			status_label.setText("已修改")
+			status_label.setStyleSheet("color: blue;")
+		elif status == "deleted":
+			status_label.setText("已删除")
+			status_label.setStyleSheet("color: red;")
+		elif status == "untracked":
+			status_label.setText("未跟踪")
+			status_label.setStyleSheet("color: gray;")
+		
+		file_label = QLabel(file_path)
+		file_label.setStyleSheet("text-align: left;")
+		
 		layout.addWidget(self.checkbox)
-
-		# 文件路径 - 使用默认颜色
-		path_label = QLabel(file_path)
-		layout.addWidget(path_label)
-
-		# 设置伸缩因子，使路径标签占据剩余空间
-		layout.setStretchFactor(path_label, 1)
-
-	def checkbox_state_changed(self, state):
-		"""当复选框状态改变时调用回调函数"""
+		layout.addWidget(status_label)
+		layout.addWidget(file_label)
+		layout.addStretch()
+		
+		self.setLayout(layout)
+	
+	def _on_state_changed(self, state):
+		"""复选框状态改变时触发"""
+		# 防止重复触发
+		if self._is_updating:
+			return
+			
 		if self.on_checkbox_changed:
 			self.on_checkbox_changed()
 
@@ -226,6 +1027,22 @@ class MainWindow(QMainWindow):
 		self.setup_connections()
 
 		logger.debug("主窗口初始化完成")
+
+		# 添加心跳计时器，防止应用程序显示为"未响应"
+		self.heartbeat_timer = QTimer(self)
+		self.heartbeat_timer.timeout.connect(self._heartbeat)
+		self.heartbeat_timer.start(100)  # 每100毫秒触发一次，提高频率
+
+		# 添加差异缓存相关属性
+		self.diff_cache_dir = os.path.join(tempfile.gettempdir(), "aicommit_diff_cache")
+		if not os.path.exists(self.diff_cache_dir):
+			os.makedirs(self.diff_cache_dir)
+		self.diff_cache = {}  # 文件路径 -> 缓存文件路径
+		self.diff_cache_timestamp = 0  # 上次缓存更新时间
+		self.diff_cache_lock = threading.Lock()  # 缓存锁，防止并发问题
+		
+		# 添加应用焦点事件监听
+		self.installEventFilter(self)
 
 	def setup_menu(self):
 		"""设置菜单栏"""
@@ -560,7 +1377,7 @@ class MainWindow(QMainWindow):
 		logger.debug("状态栏设置完成")
 
 	def setup_connections(self):
-		self.changes_list.itemSelectionChanged.connect(self.show_selected_diff)
+		self.changes_list.itemSelectionChanged.connect(self.on_changes_list_selection_changed)
 
 		logger.debug("信号连接设置完成")
 
@@ -576,6 +1393,10 @@ class MainWindow(QMainWindow):
 			except Exception as e:
 				QMessageBox.critical(self, "错误", f"无法打开仓库: {str(e)}")
 				logger.error(f"打开仓库失败: {str(e)}")
+
+		# 在成功打开仓库后，立即开始刷新差异缓存
+		if self.current_repo:
+			self.refresh_diff_cache_async()
 
 	def clone_repository(self):
 		# 这里将实现克隆仓库的功能
@@ -616,7 +1437,7 @@ class MainWindow(QMainWindow):
 		if not self.current_repo:
 			QMessageBox.warning(self, "警告", "请先打开一个仓库")
 			return
-
+		
 		try:
 			# 获取选中的文件
 			selected_files = []
@@ -625,35 +1446,122 @@ class MainWindow(QMainWindow):
 				widget = self.changes_list.itemWidget(item)
 				if widget and widget.checkbox.isChecked():
 					selected_files.append(widget.file_path)
-
+			
 			if not selected_files:
 				QMessageBox.information(self, "提示", "请选择要提交的文件")
 				return
+			
+			# 立即创建并显示加载遮罩
+			self.loading_overlay = LoadingOverlay(self)
+			self.loading_overlay.show_with_message(f"正在使用 {self.current_ai_provider} 生成提交信息...")
+			
+			# 立即处理所有待处理的事件，确保遮罩显示
+			QApplication.processEvents()
+			
+			# 使用 QTimer 延迟执行后续操作，让 UI 有时间更新
+			QTimer.singleShot(50, lambda: self._prepare_generate_commit(selected_files))
+			
+		except Exception as e:
+			logger.error(f"生成提交信息失败: {str(e)}", exc_info=True)
+			if hasattr(self, 'loading_overlay'):
+				try:
+					self._safe_hide_overlay('loading_overlay')
+				except Exception as hide_error:
+					logger.error(f"隐藏加载遮罩失败: {str(hide_error)}", exc_info=True)
+			QMessageBox.critical(self, "错误", f"生成提交信息失败: {str(e)}")
+			self.statusBar.showMessage("生成提交信息失败")
 
+	def _prepare_generate_commit(self, selected_files):
+		"""准备生成提交信息的参数并启动工作线程"""
+		try:
+			# 再次处理事件，确保UI响应
+			QApplication.processEvents()
+			
 			# 获取文件差异
 			diffs = []
 			for file_path in selected_files:
-				diff = self.current_repo.get_diff(file_path)
+				# 从缓存获取差异，而不是直接从仓库获取
+				diff = self.get_cached_diff(file_path)
+				
+				# 每处理一个文件后处理事件，保持UI响应
+				QApplication.processEvents()
+				
 				diffs.append(f"File: {file_path}\n{diff}\n")
-
+				logger.debug(f"文件差异 ({file_path}):\n{diff}")
+			
 			# 合并所有差异
 			all_diffs = "\n".join(diffs)
-
-			# 显示正在生成的提示
-			self.statusBar.showMessage(f"正在使用 {self.current_ai_provider} 生成提交信息...")
-
-			# 根据不同的 AI 提供商调用不同的 API
+			logger.debug(f"合并后的差异总长度: {len(all_diffs)} 字符")
+			
+			# 获取系统提示词
+			config_manager = Config()
+			system_prompt = config_manager.get("system_prompt", "")
+			
+			# 准备 API 参数
+			api_params = {
+				'provider': self.current_ai_provider,
+				'system_prompt': system_prompt,
+				'original_system_prompt': config_manager.get("system_prompt", ""),
+				'diffs': all_diffs
+			}
+			
+			# 添加提供商特定的参数
 			if self.current_ai_provider == "OpenAI":
-				commit_message = self.generate_with_openai(all_diffs)
+				api_params.update({
+					'api_key': config_manager.get("openai_api_key", ""),
+					'model': config_manager.get("openai_model", "gpt-3.5-turbo")
+				})
 			elif self.current_ai_provider == "Anthropic":
-				commit_message = self.generate_with_anthropic(all_diffs)
+				api_params.update({
+					'api_key': config_manager.get("anthropic_api_key", ""),
+					'model': config_manager.get("anthropic_model", "claude-3-haiku")
+				})
 			elif self.current_ai_provider == "Google":
-				commit_message = self.generate_with_google(all_diffs)
+				api_params.update({
+					'api_key': config_manager.get("google_api_key", ""),
+					'model': config_manager.get("google_model", "gemini-pro")
+				})
 			elif self.current_ai_provider == "自定义 Web API":
-				commit_message = self.generate_with_web_api(all_diffs)
-			else:
-				raise ValueError(f"未知的 AI 提供商: {self.current_ai_provider}")
+				api_params.update({
+					'api_url': config_manager.get("web_api_url", ""),
+					'api_key': config_manager.get("web_api_key", ""),
+					'model': config_manager.get("web_api_model", "")
+				})
+			
+			# 再次处理事件，确保UI响应
+			QApplication.processEvents()
+			
+			# 创建工作线程
+			self.commit_worker = ApiWorker('generate_commit', None, api_params)
+			self.commit_worker.finished.connect(self.on_generate_commit_finished)
+			self.commit_worker.error.connect(self.on_generate_commit_error)
+			
+			# 启动工作线程前再次处理事件
+			QApplication.processEvents()
+			
+			# 启动工作线程
+			self.commit_worker.start()
+			
+			# 启动后立即处理事件
+			QApplication.processEvents()
+			
+		except Exception as e:
+			logger.error(f"准备生成提交信息失败: {str(e)}", exc_info=True)
+			if hasattr(self, 'loading_overlay'):
+				try:
+					self._safe_hide_overlay('loading_overlay')
+				except Exception as hide_error:
+					logger.error(f"隐藏加载遮罩失败: {str(hide_error)}", exc_info=True)
+			QMessageBox.critical(self, "错误", f"生成提交信息失败: {str(e)}")
+			self.statusBar.showMessage("生成提交信息失败")
 
+	def on_generate_commit_finished(self, result):
+		"""生成提交信息完成的回调"""
+		try:
+			# 获取提交信息
+			commit_message = result.get('commit_message', '')
+			logger.info(f"AI 生成的提交信息:\n{commit_message}")
+			
 			# 分割提交信息为摘要和描述
 			lines = commit_message.strip().split("\n")
 			summary = lines[0]
@@ -662,41 +1570,61 @@ class MainWindow(QMainWindow):
 			# 更新 UI
 			self.summary_edit.setText(summary)
 			self.description_edit.setText(description)
-
+			
+			# 使用 QTimer 延迟隐藏加载遮罩，让 UI 有时间更新
+			logger.debug("提交信息生成完成，准备隐藏加载遮罩")
+			try:
+				if hasattr(self, 'loading_overlay') and self.loading_overlay:
+					QTimer.singleShot(100, lambda: self._safe_hide_overlay('loading_overlay'))
+				else:
+					logger.warning("找不到加载遮罩对象")
+			except Exception as e:
+				logger.error(f"隐藏加载遮罩失败: {str(e)}", exc_info=True)
+			
 			self.statusBar.showMessage("提交信息生成完成")
 			logger.info("提交信息生成完成")
 		except Exception as e:
-			QMessageBox.critical(self, "错误", f"生成提交信息失败: {str(e)}")
-			logger.error(f"生成提交信息失败: {str(e)}")
+			logger.error(f"处理生成的提交信息失败: {str(e)}", exc_info=True)
+			try:
+				if hasattr(self, 'loading_overlay') and self.loading_overlay:
+					QTimer.singleShot(100, lambda: self._safe_hide_overlay('loading_overlay'))
+			except Exception as hide_error:
+				logger.error(f"错误处理中隐藏加载遮罩失败: {str(hide_error)}", exc_info=True)
+			QMessageBox.critical(self, "错误", f"处理生成的提交信息失败: {str(e)}")
 			self.statusBar.showMessage("生成提交信息失败")
 
-	def generate_with_openai(self, diffs):
-		"""使用 OpenAI API 生成提交信息"""
-		logger.info("使用 OpenAI 生成提交信息")
-		# TODO: 实现 OpenAI API 调用
-		# 这里暂时返回模拟数据
-		return "feat: 添加用户认证功能\n\n实现了基于 JWT 的用户认证系统，包括：\n- 登录接口\n- 注册接口\n- 令牌验证中间件"
+	def on_generate_commit_error(self, error_message):
+		"""生成提交信息错误的回调"""
+		logger.error(f"生成提交信息失败: {error_message}")
+		# 使用 QTimer 延迟隐藏加载遮罩，让 UI 有时间更新
+		try:
+			if hasattr(self, 'loading_overlay') and self.loading_overlay:
+				QTimer.singleShot(100, lambda: self._safe_hide_overlay('loading_overlay'))
+			else:
+				logger.warning("找不到加载遮罩对象")
+		except Exception as e:
+			logger.error(f"隐藏加载遮罩失败: {str(e)}", exc_info=True)
+		QMessageBox.critical(self, "错误", f"生成提交信息失败: {error_message}")
+		self.statusBar.showMessage("生成提交信息失败")
 
-	def generate_with_anthropic(self, diffs):
-		"""使用 Anthropic API 生成提交信息"""
-		logger.info("使用 Anthropic 生成提交信息")
-		# TODO: 实现 Anthropic API 调用
-		# 这里暂时返回模拟数据
-		return "fix: 修复用户注册时的数据验证问题\n\n- 添加了邮箱格式验证\n- 修复了密码强度检查的逻辑错误\n- 优化了错误提示信息"
-
-	def generate_with_google(self, diffs):
-		"""使用 Google API 生成提交信息"""
-		logger.info("使用 Google 生成提交信息")
-		# TODO: 实现 Google API 调用
-		# 这里暂时返回模拟数据
-		return "refactor: 重构数据库连接模块\n\n- 使用连接池优化性能\n- 添加重试机制\n- 改进错误处理逻辑"
-
-	def generate_with_web_api(self, diffs):
-		"""使用自定义 Web API 生成提交信息"""
-		logger.info("使用自定义 Web API 生成提交信息")
-		# TODO: 实现自定义 Web API 调用
-		# 这里暂时返回模拟数据
-		return "docs: 更新 API 文档\n\n- 添加新接口说明\n- 修正参数描述\n- 增加使用示例"
+	def _safe_hide_overlay(self, overlay_name):
+		"""安全地隐藏遮罩，处理可能的异常"""
+		try:
+			overlay = getattr(self, overlay_name, None)
+			if overlay:
+				logger.debug(f"安全隐藏 {overlay_name}")
+				overlay.hide()
+			else:
+				logger.warning(f"找不到遮罩对象: {overlay_name}")
+		except Exception as e:
+			logger.error(f"安全隐藏遮罩 {overlay_name} 失败: {str(e)}", exc_info=True)
+			# 尝试使用更直接的方式隐藏
+			try:
+				overlay = getattr(self, overlay_name, None)
+				if overlay:
+					super(type(overlay), overlay).hide()
+			except:
+				pass
 
 	def commit_with_message(self):
 		if not self.current_repo:
@@ -753,47 +1681,67 @@ class MainWindow(QMainWindow):
 			logger.error(f"提交失败: {str(e)}")
 
 	def toggle_select_all(self, state):
-		"""切换全选状态"""
-		# 只处理完全选中和完全未选中的状态
-		if state == Qt.Checked or state == Qt.Unchecked:
-			is_checked = state == Qt.Checked
-			for i in range(self.changes_list.count()):
-				item = self.changes_list.item(i)
-				widget = self.changes_list.itemWidget(item)
-				if widget:
-					# 阻止触发 update_select_all_state
-					widget.checkbox.blockSignals(True)
-					widget.checkbox.setChecked(is_checked)
-					widget.checkbox.blockSignals(False)
+		"""切换全选/取消全选"""
+		# 添加性能日志
+		start_time = time.time()
+		logger.debug(f"开始切换全选状态: {state}")
+		
+		# 设置标志，防止重复触发
+		for i in range(self.changes_list.count()):
+			item = self.changes_list.item(i)
+			widget = self.changes_list.itemWidget(item)
+			if widget:
+				widget._is_updating = True
+				widget.checkbox.setChecked(state == Qt.Checked)
+				widget._is_updating = False
+		
+		end_time = time.time()
+		logger.debug(f"切换全选状态完成，耗时: {end_time - start_time:.3f}秒")
 
 	def update_select_all_state(self):
-		"""根据文件选中状态更新全选复选框状态"""
+		"""更新全选复选框状态"""
+		# 添加性能日志
+		start_time = time.time()
+		logger.debug("开始更新全选复选框状态")
+		
+		# 检查是否需要更新
+		# 如果没有文件项，则不需要更新
 		if self.changes_list.count() == 0:
-			self.select_all_checkbox.setCheckState(Qt.Unchecked)
+			self.select_all_checkbox.setChecked(False)
+			logger.debug("没有文件项，设置全选复选框为未选中")
 			return
-
+			
+		# 统计选中的文件数量
 		checked_count = 0
-		for i in range(self.changes_list.count()):
+		total_count = self.changes_list.count()
+		
+		for i in range(total_count):
 			item = self.changes_list.item(i)
 			widget = self.changes_list.itemWidget(item)
 			if widget and widget.checkbox.isChecked():
 				checked_count += 1
-
-		# 设置全选复选框状态
+		
+		# 根据选中数量设置全选复选框状态
 		if checked_count == 0:
-			self.select_all_checkbox.setCheckState(Qt.Unchecked)
-		elif checked_count == self.changes_list.count():
-			self.select_all_checkbox.setCheckState(Qt.Checked)
+			self.select_all_checkbox.setChecked(False)
+		elif checked_count == total_count:
+			self.select_all_checkbox.setChecked(True)
 		else:
 			self.select_all_checkbox.setCheckState(Qt.PartiallyChecked)
+		
+		end_time = time.time()
+		logger.debug(f"更新全选复选框状态完成，选中: {checked_count}/{total_count}, 耗时: {end_time - start_time:.3f}秒")
 
-	def show_selected_diff(self):
-		if not self.current_repo:
-			return
-
+	def on_changes_list_selection_changed(self):
+		"""当变更列表选择改变时更新差异查看器，仅显示差异，不刷新文件列表"""
+		# 添加性能日志
+		start_time = time.time()
+		logger.debug("开始处理变更列表选择改变事件")
+		
 		selected_items = self.changes_list.selectedItems()
 		if not selected_items:
 			self.diff_viewer.clear()
+			logger.debug("没有选中项，清空差异查看器")
 			return
 
 		try:
@@ -801,7 +1749,18 @@ class MainWindow(QMainWindow):
 			widget = self.changes_list.itemWidget(item)
 			if widget:
 				file_path = widget.file_path
-				diff_text = self.current_repo.get_diff(file_path)
+				
+				# 检查是否需要重新获取差异
+				# 如果当前显示的就是这个文件，则不需要重新获取
+				if hasattr(self, '_current_diff_file') and self._current_diff_file == file_path:
+					logger.debug(f"文件 {file_path} 已经在显示中，跳过重新获取差异")
+					return
+					
+				# 记录当前显示的文件
+				self._current_diff_file = file_path
+				
+				# 从缓存获取差异，而不是直接从仓库获取
+				diff_text = self.get_cached_diff(file_path)
 
 				# 设置差异文本并添加语法高亮
 				self.diff_viewer.clear()
@@ -842,10 +1801,11 @@ class MainWindow(QMainWindow):
 					else:
 						cursor.insertText(line + '\n', format_normal)
 
-				logger.debug(f"显示文件差异: {file_path}")
+				end_time = time.time()
+				logger.debug(f"显示文件差异: {file_path}, 耗时: {end_time - start_time:.3f}秒")
 		except Exception as e:
 			self.diff_viewer.setPlainText(f"无法显示差异: {str(e)}")
-			logger.error(f"显示差异失败: {str(e)}")
+			logger.error(f"显示差异失败: {str(e)}", exc_info=True)
 
 	def refresh_branches(self):
 		"""刷新分支列表"""
@@ -970,9 +1930,11 @@ class MainWindow(QMainWindow):
 				logger.error(f"创建分支失败: {str(e)}")
 
 	def refresh_ui(self):
+		"""刷新 UI 显示，包括文件列表和分支信息"""
 		# 刷新 UI 显示
 		if self.current_repo:
-			logger.debug("刷新 UI")
+			start_time = time.time()
+			logger.debug("开始刷新 UI")
 
 			# 刷新分支列表
 			self.refresh_branches()
@@ -981,14 +1943,18 @@ class MainWindow(QMainWindow):
 			self.changes_list.clear()
 
 			try:
+				# 获取仓库状态，这是一个耗时操作
 				status = self.current_repo.get_status()
-
+				
+				# 缓存当前状态，用于后续比较
+				self._last_status = status
+				
 				# 合并所有文件列表，不再区分暂存状态
 				all_files = []
 
 				# 添加已暂存的文件
 				for file_path in status['staged']:
-					if file_path not in all_files:
+					if file_path not in [f[0] for f in all_files]:
 						all_files.append((file_path, "staged"))
 
 				# 添加已修改但未暂存的文件
@@ -1026,7 +1992,177 @@ class MainWindow(QMainWindow):
 				# 更新窗口标题，显示当前分支
 				self.setWindowTitle(f"AICommit - {os.path.basename(self.current_repo.path)} ({status['branch']})")
 
-				logger.debug("UI 刷新完成")
+				end_time = time.time()
+				logger.debug(f"UI 刷新完成，耗时: {end_time - start_time:.3f}秒")
 			except Exception as e:
 				QMessageBox.critical(self, "错误", f"刷新 UI 失败: {str(e)}")
-				logger.error(f"刷新 UI 失败: {str(e)}")
+				logger.error(f"刷新 UI 失败: {str(e)}", exc_info=True)
+
+	def _heartbeat(self):
+		"""心跳函数，定期处理事件，防止应用程序显示为"未响应" """
+		try:
+			# 只处理待处理的事件，不阻塞
+			QApplication.processEvents()
+			
+			# 如果有加载遮罩显示，更新其位置
+			if hasattr(self, 'overlay') and self.overlay and self.overlay.isVisible():
+				self.overlay.resize(self.size())
+			
+			if hasattr(self, 'loading_overlay') and self.loading_overlay and self.loading_overlay.isVisible():
+				self.loading_overlay.resize(self.size())
+		except Exception as e:
+			# 心跳函数不应该抛出异常
+			logger.error(f"心跳函数出错: {str(e)}", exc_info=True)
+
+	def eventFilter(self, obj, event):
+		"""事件过滤器，用于捕获应用获取焦点事件"""
+		if event.type() == QEvent.WindowActivate:
+			# 当窗口获得焦点时，检查是否需要刷新差异缓存
+			QTimer.singleShot(100, self.check_refresh_diff_cache)
+		return super().eventFilter(obj, event)
+	
+	def check_refresh_diff_cache(self):
+		"""检查是否需要刷新差异缓存"""
+		if not self.current_repo:
+			return
+			
+		# 如果距离上次更新超过30秒，则刷新缓存
+		current_time = time.time()
+		if current_time - self.diff_cache_timestamp > 30:
+			self.refresh_diff_cache_async()
+	
+	def refresh_diff_cache_async(self):
+		"""异步刷新差异缓存"""
+		if not self.current_repo:
+			return
+			
+		# 创建后台线程刷新缓存
+		threading.Thread(
+			target=self.refresh_diff_cache,
+			daemon=True
+		).start()
+	
+	def refresh_diff_cache(self):
+		"""刷新所有文件的差异缓存"""
+		if not self.current_repo:
+			return
+			
+		try:
+			logger.debug("开始刷新差异缓存")
+			start_time = time.time()
+			
+			# 获取仓库状态
+			status = self.current_repo.get_status()
+			
+			# 合并所有文件列表
+			all_files = []
+			for file_path in status['staged']:
+				if file_path not in all_files:
+					all_files.append(file_path)
+			
+			for file_path in status['modified']:
+				if file_path not in all_files:
+					all_files.append(file_path)
+			
+			for file_path in status['deleted']:
+				if file_path not in all_files:
+					all_files.append(file_path)
+			
+			for file_path in status['untracked']:
+				if file_path not in all_files:
+					all_files.append(file_path)
+			
+			# 清理旧缓存
+			with self.diff_cache_lock:
+				for cached_file in list(self.diff_cache.keys()):
+					if cached_file not in all_files:
+						cache_path = self.diff_cache[cached_file]
+						try:
+							if os.path.exists(cache_path):
+								os.remove(cache_path)
+						except:
+							pass
+						del self.diff_cache[cached_file]
+			
+			# 并行获取差异
+			threads = []
+			for file_path in all_files:
+				thread = threading.Thread(
+					target=self.cache_file_diff,
+					args=(file_path,),
+					daemon=True
+				)
+				threads.append(thread)
+				thread.start()
+			
+			# 等待所有线程完成
+			for thread in threads:
+				thread.join()
+			
+			# 更新时间戳
+			self.diff_cache_timestamp = time.time()
+			
+			end_time = time.time()
+			logger.debug(f"差异缓存刷新完成，共 {len(all_files)} 个文件，耗时: {end_time - start_time:.3f}秒")
+		except Exception as e:
+			logger.error(f"刷新差异缓存失败: {str(e)}", exc_info=True)
+	
+	def cache_file_diff(self, file_path):
+		"""缓存单个文件的差异"""
+		try:
+			# 获取文件差异
+			diff_text = self.current_repo.get_file_diff(file_path)
+			
+			# 生成缓存文件路径
+			cache_file = os.path.join(
+				self.diff_cache_dir, 
+				f"{hash(self.current_repo.path)}_{hash(file_path)}.diff"
+			)
+			
+			# 写入缓存
+			with open(cache_file, 'w', encoding='utf-8') as f:
+				f.write(diff_text)
+			
+			# 更新缓存映射
+			with self.diff_cache_lock:
+				self.diff_cache[file_path] = cache_file
+				
+			logger.debug(f"已缓存文件差异: {file_path}")
+		except Exception as e:
+			logger.error(f"缓存文件差异失败 ({file_path}): {str(e)}")
+	
+	def get_cached_diff(self, file_path):
+		"""获取缓存的文件差异"""
+		with self.diff_cache_lock:
+			if file_path in self.diff_cache:
+				cache_path = self.diff_cache[file_path]
+				try:
+					if os.path.exists(cache_path):
+						with open(cache_path, 'r', encoding='utf-8') as f:
+							return f.read()
+				except Exception as e:
+					logger.error(f"读取缓存差异失败 ({file_path}): {str(e)}")
+		
+		# 如果缓存不存在或读取失败，直接获取
+		return self.current_repo.get_file_diff(file_path)
+
+# 在文件末尾添加
+if __name__ == "__main__":
+    import sys
+    from PyQt5.QtWidgets import QApplication
+    
+    # 设置日志
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # 创建应用
+    app = QApplication(sys.argv)
+    
+    # 创建主窗口
+    window = MainWindow()
+    window.show()
+    
+    # 运行应用
+    sys.exit(app.exec_())

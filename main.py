@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 from logging.handlers import RotatingFileHandler
+from PyQt5.QtCore import QEvent
 
 # 配置日志
 def setup_logging():

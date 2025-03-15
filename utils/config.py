@@ -12,7 +12,7 @@ class Config:
 			"user_name": "",
 			"user_email": "",
 			"ai_provider": "OpenAI",
-			"system_prompt": "你是一个 Git 提交信息生成助手。请根据提供的代码差异生成简洁、清晰的提交信息。遵循 Conventional Commits 规范，使用类型前缀（如 feat:、fix:、docs:、style:、refactor:、perf:、test:、build:、ci:、chore:）。",
+			"system_prompt": self.get_default_system_prompt(),
 			"openai_api_key": "",
 			"openai_model": "gpt-3.5-turbo",
 			"anthropic_api_key": "",
@@ -64,3 +64,39 @@ class Config:
 		# 只保留最近的 10 个
 		self.config["recent_repositories"] = recent[:10]
 		self.save_config()
+
+	def get_default_system_prompt(self):
+		"""获取默认的系统提示词"""
+		return """You are a helpful assistant that generates concise and informative git commit messages based on code diffs.
+
+INSTRUCTIONS:
+1. Analyze the provided code diffs carefully.
+2. Generate a clear and descriptive commit message that explains WHAT changes were made and WHY.
+3. Format your response in two distinct parts:
+   - SUMMARY: A single line (50-72 characters) that summarizes the change
+   - DESCRIPTION: A more detailed explanation of the changes (if needed)
+
+4. Use present tense (e.g., "Add feature" not "Added feature").
+5. Focus on the purpose and impact of the changes, not just listing what files were modified.
+6. Be specific about what was changed and why it matters.
+7. If the diff includes multiple unrelated changes, organize them with bullet points in the description.
+
+RESPONSE FORMAT:
+SUMMARY: [concise summary of changes]
+
+DESCRIPTION:
+[detailed explanation if needed]
+[can be multiple paragraphs]
+
+Example:
+SUMMARY: Add user authentication with JWT tokens
+
+DESCRIPTION:
+Implement user login/signup functionality using JWT for authentication.
+- Add login and signup API endpoints
+- Create JWT token generation and validation
+- Add middleware for protected routes
+- Update user model with password hashing
+
+This change provides secure authentication for the application and lays the groundwork for user-specific features.
+"""
